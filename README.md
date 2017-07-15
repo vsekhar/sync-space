@@ -1,15 +1,18 @@
-# sync-space
-sync-space is a utility for detecting changes to a tree and updating a remote host. It can be used to maintain a code tree on a remote build box.
+# sync-ssh
+sync-ssh gives you a remote shell while at the same time continuously syncing your local tree with the remote host.
+
+This is useful for remote development. Your code stays local (for IDE indexing and the like) but your tree is also visible and kept up-to-date on the remote host. The remote host (typically larger/faster) can then be used for builds and test.
 
 ## Prerequisites
 
  * rsync
  * ssh
- 
+ * fswatch
+
 ## Usage
 
-To sync the current directory to a remote box under $HOME/my-project:
+To sync the current directory to a remote box under $HOME:
 
-    $ sync-space user@my-dev-box.cloud.com:my-project .
+    $ sync-ssh . user@host:
 
-Use Ctrl-C to disconnect.
+Exiting the remote shell also terminates the continuous sync.
