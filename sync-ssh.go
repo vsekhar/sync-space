@@ -140,13 +140,41 @@ func main() {
 		log.Printf("host IP %s", remoteHostIP)
 	}
 
+	log.Printf("Starting initial sync")
+	rsyncArgs := []string{
+		"-rlptz",
+		"--delete-during",
+		"--exclude=.git/",
+		"--exclude=bin/",
+		"--exclude=pkg/",
+		"--rsh=ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=" + ctlPath,
+		localArg,
+		remoteUser + "@" + remoteHostIP + ":" + remotePath,
+	}
+	if *verbose {
+		log.Printf("rsyncCmd: %v", exec.Command("rsync", rsyncArgs...))
+	}
+	irsyncProc, err := startTerminalProcess(
+		"rsync",
+		rsyncArgs,
+	)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := irsyncProc.Wait(); err != nil {
+		panic(err)
+	}
+	log.Printf("Initial sync complete")
+
 	events := make(chan string)
 	log.Printf("Starting listener on %s", localArg)
 	fswatchArgs := []string{
 		"--one-per-batch",
 		"--recursive",
-		"--latency 3",
-		"--exclude .git/",
+		"--latency=3",
+		"--exclude=.git/",
+		"--exclude=bin/",
+		"--exclude=pkg/",
 		localArg,
 	}
 	fswatchCmd := exec.Command("fswatch", fswatchArgs...)
@@ -166,34 +194,29 @@ func main() {
 			log.Print(err)
 		}
 	}()
-	scanner := bufio.NewScanner(watchPipe)
 	go func() {
+		scanner := bufio.NewScanner(watchPipe)
 		for scanner.Scan() {
 			events <- scanner.Text()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("fswatch scanner error: %v", err)
 		}
 		close(events)
 	}()
 
 	log.Printf("Starting syncer")
-	rsyncArgs := []string{
-		"-rlptz",
-		"--delete-excluded",
-		"--delete-during",
-		"--exclude=.git/",
-		"--rsh=ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=" + ctlPath,
-		localArg,
-		remoteUser + "@" + remoteHostIP + ":" + remotePath,
-	}
-	if *verbose {
-		log.Printf("rsyncCmd: %v", exec.Command("rsync", rsyncArgs...))
-	}
 	rsyncTkt := make(chan struct{}, 1)
 	rsyncTkt <- struct{}{}
 	go func() {
 		for {
-			<-events
+			s, ok := <-events
+			if !ok {
+				log.Print("events closed")
+				return
+			}
 			if *verbose {
-				log.Print("syncing")
+				log.Printf("syncing: '%s'", s)
 			}
 			rsyncCmd := exec.Command("rsync", rsyncArgs...)
 			buf := new(bytes.Buffer)
@@ -238,7 +261,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	shellProc.Wait()
+	if _, err := shellProc.Wait(); err != nil {
+		panic(err)
+	}
 	log.Print("Shell exited")
 }
 
