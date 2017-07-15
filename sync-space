@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+set -x
+set -e
+set -o pipefail
+
+# logging from http://stackoverflow.com/a/7287873/608382
+log() { printf '%s: %s\n' "$(date +"%T")" "$*"; }
+error() { log "ERROR - $*" >&2; }
+fatal() { log "FATAL - $*" >&2; exit 1; }
+
+# multiple traps from https://www.reddit.com/r/programming/comments/15mnxe/how_exit_traps_can_make_your_bash_scripts_way/c7o6yqf
+_ON_EXIT=( )
+_exit () {
+    [[ ${#_ON_EXIT[@]} -gt 0 ]] || return
+    for i in $(seq ${#_ON_EXIT[@]} -1 1); do # in reverse order
+        ( ${_ON_EXIT[$(( i - 1 ))]} ) || true
+    done
+}
+trap "_exit" EXIT
+_on_exit () {
+    _ON_EXIT+=( "$1" )
+}
+
+# ssh connection reuse from https://unix.stackexchange.com/a/50515/33256
+mkdir -p $HOME/.ssh/ctl
+CTRLPATH=$HOME/.ssh/ctl/%L-%r@%h:%p
+rm -rf "$CTRLPATH"
+log "Establishing tunnel"
+ssh \
+  -nNf \
+  -o ControlMaster=yes \
+  -S "$CTRLPATH" \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  $@
+function stop_tunnel {
+  log "Stopping tunnel"
+  ssh -O exit -o ControlPath="$CTRLPATH" "$@"
+}
+_on_exit stop_tunnel
+
+# initial sync
+log "Performing initial sync"
+rsync \
+  -rlptz \
+  --executability \
+  --delete-during \
+  --delete-excluded \
+  --exclude .git \
+  -e 'ssh \
+    -S $CTRLPATH \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null' \
+  . \
+  $@:
+
+# PID fanciness from https://stackoverflow.com/a/8048493/608382
+log "Starting watch"
+function watch {
+  fswatch \
+    --recursive \
+    --latency 1 \
+    --one-per-batch \
+    . | while read num ; \
+    do \
+      rsync \
+        -rlptz \
+        --executability \
+        --delete-during \
+        --delete-excluded  \
+        --exclude .git \
+        -e 'ssh \
+          -S $CTRLPATH \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null' \
+        . \
+    done
+}
+watch &
+function stop_watch {
+  log "Stopping watch"
+  kill -INT $FSWATCHPID
+}
+_on_exit stop_watch
+
+ssh -A -o ControlPath=$HOME/.ssh/ctl/%L-%r@%h:%p
+log "SSH session ended"
