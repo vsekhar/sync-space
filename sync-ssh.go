@@ -16,9 +16,21 @@ import (
 
 var verbose = flag.Bool("v", false, "verbose output")
 var logFile = flag.String("l", "", "log file (default is stdout)")
+var localPath = flag.String("p", ".", "local directory to sync (default: $CWD)")
+
+var excludes = []string{
+	"--exclude=/.git$",
+	"--exclude=/.git/",
+	"--exclude=/bin$",
+	"--exclude=/bin/",
+	"--exclude=/pkg$",
+	"--exclude=/pkg/",
+}
 
 func main() {
 	flag.Parse()
+
+	// Setup logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if *logFile != "" {
 		out, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
@@ -27,18 +39,26 @@ func main() {
 		}
 		log.SetOutput(out)
 	}
-	if len(flag.Args()) != 2 {
+
+	// Process flags
+	argc := len(flag.Args())
+	if argc == 0 || argc > 1 {
 		panic("usage: sync-space path/to/local/dir [user@]host:path/to/remote/dir")
 	}
-	localArg := flag.Args()[0]
-	remoteArg := flag.Args()[1]
-
-	log.Printf("Syncing '%s' to '%s'", localArg, remoteArg)
-	if strings.Count(remoteArg, ":") != 1 {
+	remoteArg := flag.Args()[0]
+	log.Printf("Syncing '%s' to '%s'", *localPath, remoteArg)
+	var remoteUserHost string
+	var remotePath string
+	switch strings.Count(remoteArg, ":") {
+	case 0:
+		remoteUserHost = remoteArg
+	case 1:
+		remoteParts := strings.Split(remoteArg, ":")
+		remoteUserHost = remoteParts[0]
+		remotePath = remoteParts[1]
+	default:
 		panic("remote path format: [user@]host:path (the colon must always be present)")
 	}
-	remoteParts := strings.Split(remoteArg, ":")
-	remoteUserHost := remoteParts[0]
 	var remoteUser string
 	var remoteHost string
 	switch strings.Count(remoteUserHost, "@") {
@@ -59,16 +79,14 @@ func main() {
 	default:
 		panic(fmt.Sprintf("bad user@host string '%s'", remoteUserHost))
 	}
-	remotePath := remoteParts[1]
-	if remotePath == "" {
-		remotePath = "."
-	}
 	if remoteUserHost == "" {
 		panic(fmt.Sprintf("bad remoteArg %s", remoteArg))
 	}
 	if *verbose {
 		log.Printf("hostname %s", remoteUserHost)
 	}
+
+	// Create tunnel
 	user, err := user.Current()
 	if err != nil {
 		panic(err)
@@ -76,7 +94,6 @@ func main() {
 	ctlDir := path.Join(user.HomeDir, ".ssh/ctl")
 	os.MkdirAll(ctlDir, os.ModeDir)
 	ctlPath := path.Join(ctlDir, "%L-%r@%h:%p")
-
 	log.Print("Starting tunnel")
 	tunCmdArgs := []string{
 		"compute",
@@ -144,13 +161,10 @@ func main() {
 	rsyncArgs := []string{
 		"-rlptz",
 		"--delete-during",
-		"--exclude=.git/",
-		"--exclude=bin/",
-		"--exclude=pkg/",
 		"--rsh=ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=" + ctlPath,
-		localArg,
-		remoteUser + "@" + remoteHostIP + ":" + remotePath,
 	}
+	rsyncArgs = append(rsyncArgs, excludes...)
+	rsyncArgs = append(rsyncArgs, *localPath, remoteUser+"@"+remoteHostIP+":"+remotePath)
 	if *verbose {
 		log.Printf("rsyncCmd: %v", exec.Command("rsync", rsyncArgs...))
 	}
@@ -167,16 +181,14 @@ func main() {
 	log.Printf("Initial sync complete")
 
 	events := make(chan string)
-	log.Printf("Starting listener on %s", localArg)
+	log.Printf("Starting listener on %s", *localPath)
 	fswatchArgs := []string{
 		"--one-per-batch",
 		"--recursive",
 		"--latency=3",
-		"--exclude=.git/",
-		"--exclude=bin/",
-		"--exclude=pkg/",
-		localArg,
 	}
+	fswatchArgs = append(fswatchArgs, excludes...)
+	fswatchArgs = append(fswatchArgs, *localPath)
 	fswatchCmd := exec.Command("fswatch", fswatchArgs...)
 	watchPipe, err := fswatchCmd.StdoutPipe()
 	if err != nil {
